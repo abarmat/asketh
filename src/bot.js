@@ -1,3 +1,4 @@
+const crypto = require('crypto')
 const redis = require('redis')
 const SOFA = require('sofa-js')
 const uuid = require('uuid/v4')
@@ -6,7 +7,15 @@ const Bot = require('./lib/Bot')
 const Fiat = require('./lib/Fiat')
 const Logger = require('./lib/Logger')
 
-// TODO: read from config file
+// TODO: Evaluate use of API.ai for NLP
+// TODO: Improve router to avoid showing duplicated Q to same user
+// TODO: Add a command to list your questions history 
+// TODO: Single player mode using search to Amazon (shopping), IMDB (Movies), Yelp/4SQ (Food)
+// TODO: Do a direct user-to-user payment instead of reqeth and sendeth through app account. 
+// TODO: Set an upfront bounty for the question (Like I'll give 5 bucks for the best answer)
+
+// TODO: Read from config file
+// TODO: Use a persistent storage for the Q and A
 const db = redis.createClient({
   host: 'redis',
   port: 6379,
@@ -75,8 +84,24 @@ bot.hear(/who/i, (session, message) => {
   }
 })
 
-bot.hear(/.*/, (session, message) => {
-  session.reply('Start by asking some questions writing "ask" or answering with "answer". Type "help" if you need more info.')
+bot.hear('SOFA::Command:', (session, message) => {
+  const address = session.config.paymentAddress
+
+  switch (message.content.value) {
+    case 'like':
+      session.reply('Cool! let\'s give a tip for good karma ✨')
+      Fiat.fetch().then((toEth) => {
+        const amount = toEth.USD(DEFAULT_TIP)
+        session.requestEthToAddr(address, amount, 'Glad I could help you')
+        // TODO: Store recipient for the tip and FWD when confirmed tx
+      })
+      break
+    case 'meh':
+      session.reply('I hope you have more luck next time!')
+      break
+  }
+  
+  session.closeThread()
 })
 
 bot.hear('SOFA::Payment:', (session, message) => {
@@ -98,6 +123,10 @@ bot.hear('SOFA::Payment:', (session, message) => {
       session.reply(`There was an error with your payment!🚫`)
     }
   }
+})
+
+bot.hear(/.*/, (session, message) => {
+  session.reply('Start by asking some questions writing "ask" or answering with "answer". Type "help" if you need more info.')
 })
 
 // Ask thread
@@ -144,7 +173,7 @@ bot.thread('answer').onOpen = (session) => {
   // Fetch Q
   db.rpoplpush(topic, topic, (err, data) => {
     if (err || !data) {
-      session.reply('Sorry, I have nothing to answer right now')
+      session.reply('Sorry, there are no questions to answer now')
       return
     }
     const question = JSON.parse(data)
@@ -166,7 +195,7 @@ bot.thread('answer').onOpen = (session) => {
 bot.thread('answer').state('await_answer').hear('SOFA::Command:', (session, message) => {
   switch (message.content.value) {
     case 'answer now':
-      // Wait for input
+      // Wait for user input
       break
     case 'pass':
       session.closeThread()
@@ -180,7 +209,6 @@ bot.thread('answer').state('await_answer').hear('SOFA::Command:', (session, mess
 })
 
 bot.thread('answer').state('await_answer').hear(/.*/, (session, message) => {
-  session.setState('have_answer')
   session.reply('Thank you for your answer')
 
   const question = session.get('currentQuestion')
@@ -188,27 +216,21 @@ bot.thread('answer').state('await_answer').hear(/.*/, (session, message) => {
     {type: 'button', label: 'I like it', value: 'like'},
     {type: 'button', label: 'Meh', value: 'meh'}
   ]
+  const msg = 'Q: ' + question.text + '\n' + 'A: ' + message.content.body
   bot.client.send(question.userId, SOFA.Message({
-    body: 'Q: ' + question.text + '\n' + 'A: ' + message.content.body,
+    body: msg,
     controls: controls
   }))
-})
 
-bot.thread('answer').state('have_answer').hear('SOFA::Command:', (session, message) => {
-  switch (message.content.value) {
-    case 'like':
-      session.reply('Cool! let\'s give a tip for good karma ✨')
-      Fiat.fetch().then((toEth) => {
-        const amount = toEth.USD(DEFAULT_TIP)
-        session.requestEth(amount, 'Glad I could help you')
-        // TODO: Store recipient for the tip and FWD when confirmed tx
-      })
-      break
-    case 'meh':
-      session.reply('I hope you have more luck next time!')
-      break
-  }
-  session.closeThread()
+  // TODO: Hack to connect answers to payment address. Rework and use identity service
+  const hash = crypto.createHash('sha256').update(msg).digest('hex')
+  db.hset(hash, session.user.payment_address, (err, data) => {
+    if (err) {
+      Logger.error(err)
+    }
+    // TODO: Offer to continue answering
+    session.closeThread()
+  }) 
 })
 
 // Profile thread
@@ -235,7 +257,7 @@ bot.thread('profile').state('answer_profile').hear('SOFA::Command:', (session, m
       break
     case 'food':
       session.set('topic', 'food')
-      session.reply('So you are a foodie!')
+      session.reply('So you are a foodie, great!')
       break
   }
   session.reply('Any time you want to change your topic write "profile" again')
@@ -253,3 +275,4 @@ function help (session) {
   session.reply('☝️ Type "ask" to send the community a question about a topic')
   session.reply('🙋 Type "answer" to use your knowledge and earn money!')
 }
+

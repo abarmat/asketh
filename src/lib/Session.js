@@ -138,7 +138,12 @@ class Session {
     });
   }
 
+
   requestEth(value, message) {
+    this.requestEthToAddr(this.config.paymentAddress, value, message);
+  }
+
+  requestEthToAddr(address, value, message) {
     if (!this.user.token_id) {
       Logger.error("Cannot send transactions to users with no payment address");
       return;
@@ -147,10 +152,10 @@ class Session {
     this.reply(SOFA.PaymentRequest({
       body: message,
       value: value,
-      destinationAddress: this.config.paymentAddress
+      destinationAddress: address
     }));
   }
-
+  
   load(onReady) {
     this.storage.loadBotSession(this.address).then((data) => {
       this.data = data;
